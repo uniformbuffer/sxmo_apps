@@ -1,0 +1,132 @@
+# include common definitions \
+# shellcheck source=scripts/core/sxmo_common.sh
+. "$(which sxmo_common.sh)"
+
+write_line() {
+        printf "%s ^ 0 ^ %s\n" "$1" "$2"
+}
+
+# Input $1 = Try exec
+# Input $2 = App name
+# Input $3 = Exec
+# Input $4 = Icon
+write_app() {
+        if [ "$1" != "" ] ; then
+            if command -v "$1" >/dev/null; then
+                    write_line "$4 $2" "$3"
+            fi
+        else
+            write_line "$4 $2" "$3"
+        fi
+}
+
+# Input $1 = App name
+# Output $2 = App icon
+get_icon(){
+    icon_var=icon_$1
+
+    eval ICON=\$$icon_var
+    if [ "$ICON" == "" ]; then
+        ICON=
+    fi
+    export $2="$ICON"
+}
+
+# Input $1 = Lines
+# Output $2 = Lines cuples
+create_lines_cuples(){
+    LAST_LINE=-1
+    LINE_CUPLES=""
+    for LINE in $1
+    do 
+        if [ $LAST_LINE -ne -1 ]; then
+            LINE_CUPLES="$LINE_CUPLES $LAST_LINE,$((LINE - 1))p"
+        fi
+        LAST_LINE=$LINE
+    done
+    LINE_CUPLES="$LINE_CUPLES $LAST_LINE,\$p"
+    export $2="$LINE_CUPLES"
+}
+
+# Input $1 = Desktop file content
+# Output $2 = TryExec executable
+# Output $3 = Executable
+# Output $4 = Application Name
+# Output $5 = Icon Name
+read_desktop_file_entry() {
+    TRY_EXEC="$(echo "$1" | grep ^TryExec= | sed -nr "s/TryExec=(.*)/\1/p")"
+    NAME="$(echo "$1" | grep ^Name= | sed -nr 's/Name=(.*)/\1/p')"
+    EXEC="$(echo "$1" | grep ^Exec= | sed -nr 's/Exec=(.*)/\1/p')"
+    ICON_PATH="$(echo "$1" | grep ^Icon= | sed -nr 's/Icon=(.*)/\1/p' | sed 's/[/\.-]/_/g')"
+    get_icon "$ICON_PATH" ICON
+
+    echo "TRY_EXEC=$TRY_EXEC NAME=$NAME EXEC=$EXEC ICON=$ICON" >> test_output
+
+    export $2="$TRY_EXEC"
+    export $3="$NAME"
+    export $4="$EXEC"
+    export $5="$ICON"
+}
+
+# Input $1 = Desktop file path
+read_desktop_file(){
+    if [ -e "$1" ]; then
+        WHOLE_DESKTOP_FILE=$(cat $1)
+        LINES="$(echo "$WHOLE_DESKTOP_FILE" | grep -n -E "\[Desktop.*\]" | cut -d : -f 1 )"
+
+        RESULT=""
+
+        create_lines_cuples "$LINES" LINES_CUPLES
+	for LINES_CUPLE in $LINES_CUPLES
+        do
+            DESKTOP_FILE=$(echo "$WHOLE_DESKTOP_FILE" | sed -n $LINES_CUPLE)
+	    read_desktop_file_entry "$DESKTOP_FILE" TRY_EXEC NAME EXEC ICON
+	    write_app "$TRY_EXEC" "$NAME" "$EXEC" "$ICON"
+        done
+    fi
+}
+
+
+FLATPAK_APPS_PATH="/var/lib/flatpak/exports/share/applications/"
+SYSTEM_APPS_PATH="/usr/share/applications"
+LOCAL_APPS_PATH="$XDG_DATA_HOME/applications"
+
+# Upate cache
+update_cache(){
+	# Creating path to the cache file if it does not exists
+        [ ! -e $XDG_CACHE_HOME ] && mkdir $XDG_CACHE_HOME
+        [ ! -e $XDG_CACHE_HOME/sxmo ] && mkdir $XDG_CACHE_HOME/sxmo
+	
+	# Gathering desktop files
+	FLATPAK_DESKTOP_FILES="$(find $FLATPAK_APPS_PATH -name \*.desktop )"
+	SYSTEM_DESKTOP_FILES="$(find $SYSTEM_APPS_PATH -name \*.desktop )"
+	LOCAL_DESKTOP_FILES="$(find $LOCAL_APPS_PATH -name \*.desktop )"
+	DESKTOP_FILES="$LOCAL_DESKTOP_FILES\n$SYSTEM_DESKTOP_FILES\n$FLATPAK_DESKTOP_FILES"
+
+	echo -e "$DESKTOP_FILES" | while read file; do
+	if ! grep -q NoDisplay=true "$file"; then
+               	read_desktop_file $file
+        fi
+	done > $XDG_CACHE_HOME/sxmo/apps
+}
+
+# Collecting last update date for desktop file folders
+FLATPAK_APPS_LAST_UPDATE=$(date +%s -r "$FLATPAK_APPS_PATH")
+SYSTEM_APPS_LAST_UPDATE=$(date +%s -r "$SYSTEM_APPS_PATH")
+LOCAL_APPS_LAST_UPDATE=$(date +%s -r "$LOCAL_APPS_PATH")
+
+# Checking if cache exists. If it doesn't, the cache is generated.
+if [ -f $XDG_CACHE_HOME/sxmo/apps ] ; then
+	
+	# Checking if cache last update happened before than the last update of one desktop file folders. 
+	#If it's the case, the cache needs to be updated.
+        CACHE_LAST_UPDATE=$(date +%s -r "$XDG_CACHE_HOME/sxmo/apps")
+        if [ "$CACHE_LAST_UPDATE" -lt "$FLATPAK_APPS_LAST_UPDATE" ] || [ "$CACHE_LAST_UPDATE" -lt "$SYSTEM_APPS_LAST_UPDATE" ] || [ "$CACHE_LAST_UPDATE" -lt "$LOCAL_APPS_LAST_UPDATE" ] ; then
+                update_cache
+        fi
+else
+        update_cache 
+fi
+
+# Echo the cache file that at this point should be updated.
+cat $XDG_CACHE_HOME/sxmo/apps
